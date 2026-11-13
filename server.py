@@ -5,7 +5,7 @@ Run:  pythonw server.py   (or run.bat)   ->  http://127.0.0.1:8765
 Cookie file is re-read on every check, so just overwrite cookie.txt with a fresh export.
 """
 import os, sys, json, re, time, threading, subprocess, shutil, webbrowser, traceback
-import urllib.request, urllib.parse, http.cookiejar, html
+import urllib.request, urllib.error, urllib.parse, http.cookiejar, html
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -424,77 +424,127 @@ def collect_drive(text, root):
     return groups, notes
 
 
+def drive_open(op, fid, have, alt=False):
+    """open the Drive download stream (follows the virus-scan confirm form); returns the response"""
+    base = (f'https://drive.google.com/uc?export=download&id={fid}&confirm=t' if alt
+            else f'https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t')
+
+    def go(url):
+        req = urllib.request.Request(url, headers={'Range': f'bytes={have}-'} if have else {})
+        return op.open(req, timeout=40)
+    r = go(base)
+    if 'text/html' in (r.headers.get('Content-Type') or ''):
+        page = r.read().decode('utf-8', 'replace')
+        m = re.search(r'<form[^>]+action="([^"]+)"', page)
+        if not m:
+            msg = re.sub(r'<[^>]+>', ' ', page).lower()
+            raise PermissionError('Drive refused: ' + ('quota exceeded / no permission / sign-in needed (fresh cookie?)'
+                                                       if any(w in msg for w in ('quota', 'sign', 'access', 'permission')) else 'got a web page, not a file'))
+        q = dict(re.findall(r'<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"', page))
+        r = go(html.unescape(m.group(1)) + '?' + urllib.parse.urlencode(q))
+        if 'text/html' in (r.headers.get('Content-Type') or ''):
+            raise PermissionError('Drive refused (quota exceeded or no access)')
+    return r
+
+
 def run_drive(j):
+    """resumable: any connection drop keeps the .part file and continues from its size (up to 40 automatic retries)"""
     jid = j['id']
     rt = RT[jid]
+    MAXTRY = 40
     try:
         os.makedirs(j['folder'], exist_ok=True)
         op = drive_opener()
         fid = j['vid']
-        base = f'https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t'
-        part = os.path.join(j['folder'], j['fname'] + '.part') if j.get('fname') else None
-        have = os.path.getsize(part) if part and os.path.isfile(part) else 0
-
-        def open_url(url):
-            req = urllib.request.Request(url, headers={'Range': f'bytes={have}-'} if have else {})
-            return op.open(req, timeout=40)
-
-        r = open_url(base)
-        if 'text/html' in (r.headers.get('Content-Type') or ''):       # confirm / virus-scan page: follow its form
-            page = r.read().decode('utf-8', 'replace')
-            m = re.search(r'<form[^>]+action="([^"]+)"', page)
-            if not m:
-                msg = re.sub(r'<[^>]+>', ' ', page)
-                raise RuntimeError('Drive refused: ' + (' sorry, no permission / quota exceeded / sign in (new cookie?)' if 'quota' in msg.lower() or 'sign' in msg.lower() or 'access' in msg.lower() else 'got a web page, not a file'))
-            q = dict(re.findall(r'<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"', page))
-            r = open_url(html.unescape(m.group(1)) + '?' + urllib.parse.urlencode(q))
-            if 'text/html' in (r.headers.get('Content-Type') or ''):
-                raise RuntimeError('Drive refused (quota exceeded or no access)')
-        name = safe_name(cd_name(r.headers.get('Content-Disposition')) or j.get('fname') or fid)
-        if not j.get('fname') or j['fname'] != name:
-            j['fname'] = name
-            part = os.path.join(j['folder'], name + '.part')
-            have = os.path.getsize(part) if os.path.isfile(part) else 0
-        j['title'] = name
-        status = getattr(r, 'status', 200)
-        cr = r.headers.get('Content-Range')
-        if status == 206 and cr:
-            total = int(cr.split('/')[-1])
-        else:
-            have = 0                      # server ignored Range -> start over
-            total = int(r.headers.get('Content-Length') or 0)
-        j['size'] = total or None
-        final = os.path.join(j['folder'], name)
-        t0, last, got = time.time(), time.time(), 0
-        with open(part, 'ab' if have else 'wb') as f:
-            while True:
+        tries, alt, total = 0, False, 0
+        while True:
+            if rt.get('stop'):
+                break
+            part = os.path.join(j['folder'], j['fname'] + '.part') if j.get('fname') else None
+            have = os.path.getsize(part) if part and os.path.isfile(part) else 0
+            try:
+                r = drive_open(op, fid, have, alt)
+                name = safe_name(cd_name(r.headers.get('Content-Disposition')) or j.get('fname') or fid)
+                if j.get('fname') != name:                    # first contact (or renamed): find the matching .part
+                    j['fname'] = name
+                    part = os.path.join(j['folder'], name + '.part')
+                    have = os.path.getsize(part) if os.path.isfile(part) else 0
+                    if have:                                  # this response started at 0: reopen with Range
+                        r.close()
+                        r = drive_open(op, fid, have, alt)
+                j['title'] = name
+                cr = r.headers.get('Content-Range')
+                skip = 0
+                if getattr(r, 'status', 200) == 206 and cr:
+                    total = int(cr.split('/')[-1])
+                else:
+                    total = int(r.headers.get('Content-Length') or 0)
+                    if have:                                  # server ignored Range
+                        if not alt:
+                            alt = True                        # try the other endpoint once before giving up resume
+                            r.close()
+                            continue
+                        skip = have                           # keep the .part, discard the bytes we already have
+                j['size'] = total or None
+                final = os.path.join(j['folder'], name)
+                t0, last, got = time.time(), time.time(), 0
+                with open(part, 'ab') as f:
+                    while True:
+                        if rt.get('stop'):
+                            break
+                        chunk = r.read(262144)
+                        if not chunk:
+                            break
+                        if skip:
+                            d = min(skip, len(chunk))
+                            skip -= d
+                            chunk = chunk[d:]
+                            j.update(note='server cannot resume - skipping bytes already downloaded')
+                            if not chunk:
+                                continue
+                        f.write(chunk)
+                        got += len(chunk)
+                        now = time.time()
+                        if now - last > 0.5:
+                            last = now
+                            cur = have + got
+                            sp = got / max(now - t0, 0.1)
+                            j.update(pct=round(cur / total * 100, 1) if total else 0, speed=sp,
+                                     eta=(total - cur) / sp if total and sp else None)
+                            tries = 0 if got > 2_000_000 else tries     # real progress -> reset the retry budget
+                r.close()
                 if rt.get('stop'):
                     break
-                chunk = r.read(262144)
-                if not chunk:
-                    break
-                f.write(chunk)
-                got += len(chunk)
-                now = time.time()
-                if now - last > 0.5:
-                    last = now
-                    cur = have + got
-                    sp = got / max(now - t0, 0.1)
-                    j.update(pct=round(cur / total * 100, 1) if total else 0, speed=sp,
-                             eta=(total - cur) / sp if total and sp else None)
-        r.close()
-        with LOCK:
-            if rt.get('stop'):
-                apply_stop(j, rt['stop'])
+                cur = os.path.getsize(part)
+                if total and cur < total:
+                    raise ConnectionError(f'stream ended at {cur}/{total}')
+                with LOCK:
+                    if os.path.exists(final):
+                        os.remove(final)
+                    os.replace(part, final)
+                    j.update(status='done', pct=100, speed=None, eta=None, note='', file=final, size=os.path.getsize(final))
+                    save_jobs()
                 return
-            cur = have + got
-            if total and cur < total:
-                raise RuntimeError(f'connection dropped at {cur}/{total} - press resume')
-            if os.path.exists(final):
-                os.remove(final)
-            os.replace(part, final)
-            j.update(status='done', pct=100, speed=None, eta=None, note='', file=final, size=os.path.getsize(final))
-            save_jobs()
+            except PermissionError as e:                      # quota / no access: retrying will not help
+                raise RuntimeError(str(e))
+            except urllib.error.HTTPError as e:
+                if e.code in (400, 401, 403, 404):
+                    raise RuntimeError(f'HTTP {e.code} - file not shared with this account / removed / quota')
+                err = f'HTTP {e.code}'
+            except Exception as e:                            # timeouts, resets, short reads ...
+                err = str(e)[:80]
+            tries += 1
+            if tries > MAXTRY:
+                raise RuntimeError(f'gave up after {MAXTRY} retries ({err}) - .part kept, press resume')
+            wait = min(60, 2 * tries)
+            with LOCK:
+                j.update(speed=None, eta=None, note=f'connection lost ({err}) - resuming in {wait}s (try {tries}/{MAXTRY}), progress kept')
+            for _ in range(wait):
+                if rt.get('stop'):
+                    break
+                time.sleep(1)
+        with LOCK:
+            apply_stop(j, rt['stop'])
     except Exception as e:
         with LOCK:
             if rt.get('stop'):
@@ -1157,7 +1207,7 @@ class H(BaseHTTPRequestHandler):
                 if a == 'pause' and j['status'] in ('running', 'queued'):
                     stop_job(j, 'pause')
                 elif a in ('resume', 'retry') and j['status'] in ('paused', 'error'):
-                    j.update(status='queued', note='', pct=j['pct'] if a == 'resume' else 0)
+                    j.update(status='queued', note='', pct=j['pct'] if (a == 'resume' or j.get('kind') == 'drive') else 0)
                 elif a == 'remove':
                     stop_job(j, 'cancel')
                 save_jobs()
