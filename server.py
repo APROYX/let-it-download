@@ -23,6 +23,7 @@ DEFAULTS = {
     'cookie': str(Path.home() / 'Downloads' / 'cookie.txt'),
     'warn_days': 7,
     'concurrency': 2,
+    'speed_limit': 0,        # total MB/s over all downloads, 0 = unlimited
     'quality': '1080',
     'proxy': '',
     'base': str(Path.home() / 'Downloads' / 'LetItDL'),
@@ -325,6 +326,18 @@ def file_valid(folder, it):
     return bool(f) and media_ok(f, it.get('dur'))[0]
 
 
+def per_job_limit(extra=0):
+    """bytes/s for one download: the total limit shared between the downloads running right now (None = unlimited)"""
+    try:
+        total = float(SET.get('speed_limit') or 0)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    running = sum(1 for x in JOBS if x['status'] == 'running') + extra
+    return max(20_000, total * 1_000_000 / max(1, running))
+
+
 def stop_job(j, why):
     """pause/cancel a job whether it is running (any kind), queued or idle"""
     rt = RT.get(j['id'])
@@ -504,6 +517,11 @@ def run_drive(j):
                                 continue
                         f.write(chunk)
                         got += len(chunk)
+                        lim = per_job_limit()
+                        if lim:                                   # sleep until we are back under the limit
+                            ahead = got / lim - (time.time() - t0)
+                            if ahead > 0:
+                                time.sleep(min(ahead, 2))
                         now = time.time()
                         if now - last > 0.5:
                             last = now
@@ -582,6 +600,9 @@ def run_job(j):
         cmd = ytdlp_base() + fmt_args(j['quality']) + [
             '-o', os.path.join(j['folder'], '%(title)s.%(ext)s'), '--windows-filenames', '--newline',
             '--retries', '20', '--fragment-retries', '20', '--http-chunk-size', '10M', '-N', '4', '--no-mtime', '--progress-template', TPL, j['url']]
+        lim = per_job_limit()
+        if lim:
+            cmd[1:1] = ['--limit-rate', str(int(lim))]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, text=True,
                                 encoding='utf-8', errors='replace', creationflags=NOWIN, stdin=subprocess.DEVNULL,
                                 env={**os.environ, 'PYTHONUNBUFFERED': '1'})
@@ -1291,6 +1312,11 @@ class H(BaseHTTPRequestHandler):
                 for k in ('cookie', 'proxy', 'base', 'quality', 'premiere_cmd', 'premiere_status_cmd'):
                     if k in d:
                         SET[k] = str(d[k]).strip()
+                if 'speed_limit' in d:
+                    try:
+                        SET['speed_limit'] = max(0.0, float(d['speed_limit']))
+                    except (TypeError, ValueError):
+                        pass
                 for k in ('warn_days', 'concurrency', 'list_limit'):
                     if k in d:
                         SET[k] = max(1, int(d[k]))

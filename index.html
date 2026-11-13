@@ -187,6 +187,10 @@ h2{font:400 26px 'Shrikhand';margin:0 0 12px;color:var(--yellow)}
     <div class="row"><button class="btn sm" onclick="post('/api/jobs',{action:'resume_all'})">▶ resume all</button>
     <button class="btn sm ghost" onclick="post('/api/jobs',{action:'pause_all'})">⏸ pause all</button>
     <button class="btn sm ghost" onclick="post('/api/jobs',{action:'clear_done'})">clear done</button></div></div>
+  <div class="row" style="margin-top:12px"><span class="muted">🐢 speed limit</span>
+    <input id="spd" type="number" min="0" step="0.5" style="width:90px" placeholder="0">
+    <span class="muted">MB/s total (0 = unlimited) - shared between running downloads; yt-dlp jobs pick it up when they start</span>
+    <button class="btn sm" onclick="setSpeed()">apply</button></div>
   <div id="qList" style="margin-top:14px"></div>
 </section>
 
@@ -414,7 +418,8 @@ const drop=$('#drop');
 ['dragover','dragenter'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('over')}));
 ['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
 drop.addEventListener('drop',async ev=>{const f=ev.dataTransfer.files[0];if(!f)return;const r=await post('/api/cookie/save',{text:await f.text()});toast(r.ok?'cookie saved ✦':r.error)});
-function fillSettings(){const s=S.settings;$('#sCookie').value=s.cookie;$('#sWarn').value=s.warn_days;$('#sPar').value=s.concurrency;$('#sProxy').value=s.proxy;$('#sBase').value=s.base;$('#sHook').value=s.premiere_cmd||'';$('#sHook2').value=s.premiere_status_cmd||''}
+function fillSettings(){const s=S.settings;$('#sCookie').value=s.cookie;$('#sWarn').value=s.warn_days;$('#sPar').value=s.concurrency;$('#sProxy').value=s.proxy;$('#sBase').value=s.base;if(document.activeElement!==$('#spd'))$('#spd').value=s.speed_limit||'';$('#sHook').value=s.premiere_cmd||'';$('#sHook2').value=s.premiere_status_cmd||''}
+async function setSpeed(){const v=parseFloat($('#spd').value)||0;await post('/api/settings',{speed_limit:v});toast(v?`limit ${v} MB/s ✦`:'no limit ✦')}
 async function saveSettings(){await post('/api/settings',{cookie:$('#sCookie').value,warn_days:$('#sWarn').value,concurrency:$('#sPar').value,proxy:$('#sProxy').value,base:$('#sBase').value,premiere_cmd:$('#sHook').value,premiere_status_cmd:$('#sHook2').value});toast('saved')}
 try{if(Notification.permission==='default')document.addEventListener('click',()=>Notification.requestPermission(),{once:true})}catch(e){}
 poll();setInterval(poll,1000);
