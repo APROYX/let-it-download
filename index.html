@@ -165,10 +165,10 @@ h2{font:400 26px 'Shrikhand';margin:0 0 12px;color:var(--yellow)}
 
 <section class="panel glass" id="p-drive">
   <h2>Google Drive</h2>
-  <textarea id="driveText" placeholder="Paste Google Drive file links (drive.google.com/file/d/… or open?id=…), one per line"></textarea>
+  <textarea id="driveText" placeholder="Paste Google Drive file or folder links, one per line (optionally "Label: link")"></textarea>
   <div class="row" style="margin-top:12px"><input id="driveFolder" style="flex:1;min-width:220px" placeholder="save folder">
   <button class="btn" onclick="addDrive()">Grab it ✦</button></div>
-  <p class="muted">Big files, resume after pause/restart, virus-scan page handled. Private files work if your cookie.txt is signed in to the Google account that can open them. Folder links aren't supported - open the folder and paste file links.</p>
+  <p class="muted">Big files, resume after pause/restart, virus-scan page handled. Private files work if your cookie.txt is signed in to the Google account that can open them. Folder links work too ("Label: link" puts the files in a subfolder named Label).</p>
   <div id="driveQ" style="margin-top:14px"></div>
 </section>
 
@@ -261,7 +261,7 @@ function go(t){tab=t;document.querySelectorAll('.panel').forEach(p=>p.classList.
 async function poll(){
   try{S=await api('/api/state')}catch(e){return}
   renderNav();renderChip();renderJobs();renderComps();updateBadges();
-  if(!poll.init){poll.init=1;$('#folder').value=S.settings.base;$('#driveFolder').value=S.settings.base+'\\Drive';if(S.settings.browser)$('#exBrowser').value=S.settings.browser;$('#q').value=S.settings.quality;fillSettings();let t='home';try{t=localStorage.tab||'home'}catch(e){}
+  if(!poll.init){poll.init=1;$('#folder').value=S.settings.base;$('#driveFolder').value=S.settings.base+'\\Drive';if(S.settings.browser)$('#exBrowser').value=S.settings.browser;$('#q').value=S.settings.quality;fillSettings();let t=location.hash.slice(1)||'home';if(!location.hash)try{t=localStorage.tab||'home'}catch(e){}
     if(t.startsWith('ch:')&&!S.settings.channels.find(c=>'ch:'+c.key===t))t='home';go(t)}
 }
 function renderChip(){

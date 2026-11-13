@@ -52,7 +52,7 @@ JOBS = jload('jobs.json', [])
 RT = {}          # job id -> runtime {'proc','stop'}
 CH_STATE = {}    # channel key -> {'refreshing','error'}
 COOKIE_FLAG = {'rejected': False, 'mtime': 0, 'test': None}
-for j in JOBS:   # interrupted by restart -> paused, ready to resume (.part files kept)
+for j in ([] if os.environ.get('LID_DEMO') else JOBS):   # interrupted by restart -> paused, ready to resume (.part files kept)
     if j['status'] in ('running', 'queued'):
         j['status'] = 'paused'
         j['note'] = 'interrupted - press resume'
@@ -1287,7 +1287,8 @@ def main():
     except OSError:
         open_ui()      # already running
         return
-    threading.Thread(target=scheduler, daemon=True).start()
+    if not os.environ.get('LID_DEMO'):      # LID_DEMO=1: static data for screenshots, no downloads
+        threading.Thread(target=scheduler, daemon=True).start()
     threading.Thread(target=cookie_watcher, daemon=True).start()
     threading.Thread(target=comp_watcher, daemon=True).start()
     if '--no-ui' in sys.argv:

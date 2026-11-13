@@ -10,6 +10,16 @@ A psychedelic (Tame Impala *Currents*-flavoured) desktop GUI for **yt-dlp** on W
 - **Google Drive** file and folder links (resumable, uses your cookie for private files)
 - **Compilations**: paste `Title / List: / titles… / channel`, it matches the titles, downloads them in order and can hand the ordered files to your editor (Premiere, Resolve, ffmpeg…)
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Paste](docs/screenshots/home.png) | ![Channel tab](docs/screenshots/channel.png) |
+| ![Queue](docs/screenshots/queue.png) | ![Compilations](docs/screenshots/compilations.png) |
+| ![Google Drive](docs/screenshots/drive.png) | ![Cookie health](docs/screenshots/cookie.png) |
+
+(Demo data: public videos from the Blender Studio channel.)
+
 ## Run
 
 Needs Windows 10/11 with WebView2 (preinstalled on 11), `yt-dlp` and `ffmpeg`/`ffprobe` on `PATH`, Python 3.10+.
