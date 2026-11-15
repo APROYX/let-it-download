@@ -134,7 +134,7 @@ h2{font:400 26px 'Shrikhand';margin:0 0 12px;color:var(--yellow)}
   <textarea id="paste" placeholder="Drop YouTube links, video IDs or playlist links here… one per line, as many as you like"></textarea>
   <div class="row" style="margin-top:12px">
     <select id="q"><option value="1080">1080p mp4 (H.264)</option><option value="720">720p mp4</option><option value="480">480p mp4</option><option value="best">Best quality</option><option value="audio">Audio only (mp3)</option></select>
-    <input id="folder" style="flex:1;min-width:220px" placeholder="save folder">
+    <input id="folder" style="flex:1;min-width:220px" placeholder="save folder"><button class="btn sm ghost" onclick="browse('folder')">📂 browse</button>
     <button class="btn" onclick="addPaste()">Let it happen ✦</button>
   </div>
   <p class="muted">Paused or interrupted downloads keep their <code>.part</code> file — Resume picks up where it stopped, even after closing the app.</p>
@@ -166,7 +166,7 @@ h2{font:400 26px 'Shrikhand';margin:0 0 12px;color:var(--yellow)}
 <section class="panel glass" id="p-drive">
   <h2>Google Drive</h2>
   <textarea id="driveText" placeholder="Paste Google Drive file or folder links, one per line (optionally "Label: link")"></textarea>
-  <div class="row" style="margin-top:12px"><input id="driveFolder" style="flex:1;min-width:220px" placeholder="save folder">
+  <div class="row" style="margin-top:12px"><input id="driveFolder" style="flex:1;min-width:220px" placeholder="save folder"><button class="btn sm ghost" onclick="browse('driveFolder')">📂 browse</button>
   <button class="btn" onclick="addDrive()">Grab it ✦</button></div>
   <p class="muted">Big files, resume after pause/restart, virus-scan page handled. Private files work if your cookie.txt is signed in to the Google account that can open them. Folder links work too ("Label: link" puts the files in a subfolder named Label).</p>
   <div id="driveQ" style="margin-top:14px"></div>
@@ -175,6 +175,7 @@ h2{font:400 26px 'Shrikhand';margin:0 0 12px;color:var(--yellow)}
 <section class="panel glass" id="p-comp">
   <h2>Compilations → Premiere</h2>
   <textarea id="compText" style="min-height:230px" placeholder="NEW VIDEO TITLE&#10;List:&#10;title 1&#10;title 2&#10;MyChannel&#10;&#10;ANOTHER TITLE&#10;List:&#10;title 1&#10;OtherChannel"></textarea>
+  <div class="row" style="margin-top:12px"><input id="compFolder" style="flex:1;min-width:240px" placeholder="save folder (blank = the channel's folder)"><button class="btn sm ghost" onclick="browse('compFolder')">📂 browse</button></div>
   <div class="row" style="margin-top:12px"><label><input type="checkbox" id="compPr" checked style="width:auto"> run my editor hook when downloaded (optional, see README)</label>
   <button class="btn" style="margin-left:auto" onclick="addComp()">Match &amp; start ✦</button></div>
   <p class="muted">Several blocks at once are fine. The last line of a block is one of your channel tabs. Titles are matched on that channel (then your other channels), downloaded in order into the channel folder, then your optional editor hook runs once (e.g. builds a Premiere sequence). Without a hook you get the ordered file list.</p>
@@ -329,7 +330,7 @@ function renderJobs(){
 /* ---------- compilations ---------- */
 async function addComp(){
   $('#compErr').textContent='matching titles on the channels… (can take a minute)';
-  const r=await post('/api/comp/add',{text:$('#compText').value,premiere:$('#compPr').checked});
+  const r=await post('/api/comp/add',{text:$('#compText').value,premiere:$('#compPr').checked,folder:$('#compFolder').value.trim()});
   if(r.ok){$('#compErr').textContent='';$('#compText').value='';toast(`Started ${r.started} compilation(s) ✦`)}else $('#compErr').textContent='⚠ '+(r.error||'failed');
 }
 let compSig='';
@@ -347,7 +348,7 @@ function renderComps(){
       if(!p.premiere)pl+=' · Premiere not reachable';
       else if(p.same_active)pl+=p.seq?' · ✅ sequence is in it':' · ❌ sequence not found in it';
       else pl+=(p.open?' · open but not the active one':' · not open')+` · active is ${nm(p.active)}`+(p.seq?' (it has a sequence with this name)':'');
-      return `<div style="margin-top:8px;font-size:13px">${pl}${pl?'<br>':''}${bad.length?'⚠ '+bad.map(i=>`#${i.n} ${esc(i.title)} - ${esc(i.why)}`).join('<br>⚠ '):'✅ all '+k.items.length+' videos full length'}</div>`})():'';
+      return `<div style="margin-top:8px;font-size:13px">${pl}${pl?'<br>':''}${bad.length?'⚠ '+bad.map(i=>`#${i.n} ${esc(i.title)} - ${esc(i.why)}`).join('<br>⚠ ')+`<br><button class="btn sm" style="margin-top:6px" onclick="this.disabled=true;post('/api/comp/check',{id:'${c.id}',fix:true})">⬇ add the ${bad.length} link${bad.length>1?'s':''} again</button>`:'✅ all '+k.items.length+' videos full length'}${k.requeued?`<br>⬇ ${k.requeued} queued again`:''}</div>`})():'';
     return `<div class="job" style="grid-template-columns:1fr auto"><div style="min-width:0"><div class="ti" style="white-space:normal">${esc(c.name)} <span class="muted">· ${esc(c.channel)}</span></div>
       <div class="st">${esc(st)}${c.status==='downloading'&&c.note?' · '+esc(c.note):''}</div>${res}${ck}
       <div class="muted" style="margin-top:6px;font-size:12px">${c.items.map((i,n)=>{const j=jm[i.job];const s=!j||j.status==='done'?'✓':j.status==='running'?Math.floor(j.pct||0)+'%':j.status;return `${n+1}. ${esc(i.title)} <b>${s}</b>`}).join('<br>')}</div></div>
@@ -402,6 +403,7 @@ async function delCh(){if(!confirm('Remove this channel tab? (downloaded files s
 async function editCh(){const c=chOf(curKey);const n=prompt('Tab name',c.name);if(n===null)return;const f=prompt('Save folder',c.folder);
   await post('/api/channels',{action:'edit',key:curKey,name:n,folder:f||c.folder});await poll();openCh(curKey)}
 /* ---------- drive + cookie extract ---------- */
+async function browse(id){const el=$('#'+id);const r=await api('/api/browse',{start:el.value});if(r.path)el.value=r.path}
 async function addDrive(){
   const f=$('#driveFolder').value.trim();
   const r=await post('/api/add',{text:$('#driveText').value,folder:f||S.settings.base,drive_folder:f||S.settings.base});

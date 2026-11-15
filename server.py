@@ -338,6 +338,24 @@ def per_job_limit(extra=0):
     return max(20_000, total * 1_000_000 / max(1, running))
 
 
+def browse_folder(start=''):
+    """native Windows folder dialog (PowerShell); returns '' when cancelled"""
+    if os.name != 'nt':
+        return ''
+    ps = ("Add-Type -AssemblyName System.Windows.Forms;"
+          "$f=New-Object System.Windows.Forms.Form;$f.TopMost=$true;$f.ShowInTaskbar=$false;$f.Opacity=0;$f.StartPosition='CenterScreen';$f.Show();"
+          "$d=New-Object System.Windows.Forms.FolderBrowserDialog;$d.Description='Choose a folder';$d.ShowNewFolderButton=$true;"
+          "if($env:LID_START -and (Test-Path $env:LID_START)){$d.SelectedPath=$env:LID_START};"
+          "if($d.ShowDialog($f) -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8;Write-Output $d.SelectedPath};$f.Close()")
+    try:
+        r = subprocess.run(['powershell', '-NoProfile', '-STA', '-Command', ps], capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=600, creationflags=NOWIN, stdin=subprocess.DEVNULL,
+                           env={**os.environ, 'LID_START': start or ''})
+        return (r.stdout or '').strip()
+    except Exception:
+        return ''
+
+
 def stop_job(j, why):
     """pause/cancel a job whether it is running (any kind), queued or idle"""
     rt = RT.get(j['id'])
@@ -944,7 +962,7 @@ def job_id(vid, folder, q):
     return vid + '-' + re.sub(r'\W', '', folder)[-12:] + q
 
 
-def add_comps(text, premiere):
+def add_comps(text, premiere, folder_override=''):
     blocks = parse_comps(text)
     if not blocks:
         return {'ok': False, 'error': 'no "List:" block found'}
@@ -964,7 +982,7 @@ def add_comps(text, premiere):
     if errs:
         return {'ok': False, 'error': '\n'.join(errs)}      # nothing starts until every title resolves
     for b, items in plans:
-        folder = find_channel(b['channel'])['folder']
+        folder = folder_override or find_channel(b['channel'])['folder']
         add_jobs([{'id': it['id'], 'title': it['title'], 'dur': it.get('dur')} for it in items if not file_valid(folder, it)], folder, '1080')
         with LOCK:
             COMPS.append({'id': str(int(time.time() * 1000)), 'name': b['name'], 'channel': b['channel'], 'folder': folder,
@@ -1009,7 +1027,7 @@ def premiere_status(c):
         return None
 
 
-def check_comp(c):
+def check_comp(c, fix=False):
     rep = {'at': time.time(), 'items': [], 'project': {}}
     path = (c.get('result') or {}).get('project', '')
     st = premiere_status(c)
@@ -1030,6 +1048,19 @@ def check_comp(c):
             continue
         ok, why = media_ok(f, it.get('dur'))
         rep['items'].append({'n': n, 'title': it['title'], 'ok': ok, 'why': why})
+    if fix:                                    # cancelled / failed / cut-off videos: quarantine the bad file, queue the link again
+        todo = []
+        for it, row in zip(c['items'], rep['items']):
+            if row['ok']:
+                continue
+            f = file_for(c['folder'], it['title'])
+            if f:
+                os.replace(f, f + '.incomplete')
+            todo.append({'id': it['id'], 'title': it['title'], 'dur': it.get('dur')})
+        if todo:
+            rep['requeued'] = add_jobs(todo, c['folder'], '1080')
+            if c['status'] in ('error', 'done') and not c.get('result'):
+                c.update(status='downloading', note='')
     c['check'] = rep
     return rep
 
@@ -1188,12 +1219,12 @@ class H(BaseHTTPRequestHandler):
                 found += len(its)
             return {'ok': True, 'added': n, 'found': found, 'notes': dnotes}
         if path == '/api/comp/add':
-            return add_comps(d.get('text', ''), bool(d.get('premiere', True)))
+            return add_comps(d.get('text', ''), bool(d.get('premiere', True)), (d.get('folder') or '').strip())
         if path == '/api/comp/check':
             c = next((x for x in COMPS if x['id'] == d.get('id')), None)
             if not c:
                 return {'ok': False}
-            r = check_comp(c)
+            r = check_comp(c, bool(d.get('fix')))
             save_comps()
             return {'ok': True, 'check': r}
         if path == '/api/comp':
@@ -1249,13 +1280,19 @@ class H(BaseHTTPRequestHandler):
         if path == '/api/open':
             p = d.get('path', '')
             with LOCK:
-                allowed = {j.get('file') for j in JOBS} | {j['folder'] for j in JOBS} | {c['folder'] for c in SET['channels']} | {SET['base']}
+                allowed = ({j.get('file') for j in JOBS} | {j['folder'] for j in JOBS} | {c['folder'] for c in SET['channels']}
+                           | {c['folder'] for c in COMPS} | {SET['base']})
             if p in allowed and os.name == 'nt':
-                if os.path.isfile(p):
-                    subprocess.Popen(['explorer', '/select,' + p])
-                elif os.path.isdir(p):
-                    os.startfile(p)
+                pn = os.path.normpath(p)
+                if os.path.isfile(pn):
+                    subprocess.Popen(f'explorer /select,"{pn}"')     # a list arg gets quoted wrongly and Explorer opens Documents
+                elif os.path.isdir(pn):
+                    os.startfile(pn)
+                elif os.path.isdir(os.path.dirname(pn)):
+                    os.startfile(os.path.dirname(pn))
             return {'ok': True}
+        if path == '/api/browse':
+            return {'ok': True, 'path': browse_folder(d.get('start', ''))}
         if path == '/api/channel/refresh':
             fetch_channel(d.get('key'))
             return {'ok': True}
